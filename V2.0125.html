@@ -9,12 +9,15 @@
         #waveform { width: 100%; height: 100px; margin-top: 20px; }
         .controls { margin-top: 20px; }
         .controls label { margin-right: 10px; }
+        #file-list { margin-top: 20px; }
     </style>
 </head>
 <body>
     <h1>音声編集ツール</h1>
 
     <input type="file" id="file-input" accept="audio/*">
+    <button id="add-file">追加</button>
+    <div id="file-list"></div>
     <div id="waveform"></div>
 
     <div class="controls">
@@ -43,6 +46,7 @@
     <script>
         let audioContext = new (window.AudioContext || window.webkitAudioContext)();
         let buffer, source;
+        let buffers = [];
         let startTime = 0, endTime = 5;
         let copiedBuffer = null;
         let waveSurfer = WaveSurfer.create({
@@ -51,7 +55,8 @@
             progressColor: 'purple'
         });
 
-        document.getElementById('file-input').addEventListener('change', loadAudioFile);
+        document.getElementById('file-input').addEventListener('change', handleFileSelect);
+        document.getElementById('add-file').addEventListener('click', addFileToList);
         document.getElementById('cut').addEventListener('click', cutAudio);
         document.getElementById('fade-in').addEventListener('click', fadeInAudio);
         document.getElementById('fade-out').addEventListener('click', fadeOutAudio);
@@ -59,18 +64,31 @@
         document.getElementById('play').addEventListener('click', playAudio);
         document.getElementById('save').addEventListener('click', saveAudio);
 
-        function loadAudioFile(event) {
+        function handleFileSelect(event) {
             const file = event.target.files[0];
             const reader = new FileReader();
             reader.onload = function() {
                 audioContext.decodeAudioData(reader.result, function(decodedBuffer) {
                     buffer = decodedBuffer;
+                    buffers.push(buffer);
+                    addFileToListUI(file.name);
                     waveSurfer.loadDecodedBuffer(buffer);
                     endTime = buffer.duration;
                     document.getElementById('end-time').value = endTime;
                 });
             };
             reader.readAsArrayBuffer(file);
+        }
+
+        function addFileToList() {
+            document.getElementById('file-input').click();
+        }
+
+        function addFileToListUI(fileName) {
+            const fileList = document.getElementById('file-list');
+            const fileItem = document.createElement('div');
+            fileItem.textContent = fileName;
+            fileList.appendChild(fileItem);
         }
 
         function cutAudio() {
