@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>音声編集ツール</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        #waveform { width: 100%; height: 100px; margin-top: 20px; }
+        .controls { margin-top: 20px; }
+        .controls label { margin-right: 10px; }
+    </style>
+</head>
+<body>
+    <h1>音声編集ツール</h1>
+
+    <input type="file" id="file-input" accept="audio/*">
+    <div id="waveform"></div>
+
+    <div class="controls">
+        <label for="start-time">開始時間:</label>
+        <input type="number" id="start-time" value="0" min="0" step="0.1"> 秒
+        <label for="end-time">終了時間:</label>
+        <input type="number" id="end-time" value="5" min="0" step="0.1"> 秒
+        <br>
+        <label for="playback-rate">再生速度:</label>
+        <input type="number" id="playback-rate" value="1" min="0.5" max="2" step="0.1">
+        <br>
+        <label for="pitch">ピッチ（Hz）:</label>
+        <input type="number" id="pitch" value="440" min="20" max="2000" step="10">
+        <br>
+        <button id="cut">カット</button>
+        <button id="fade-in">フェードイン</button>
+        <button id="fade-out">フェードアウト</button>
+        <button id="paste">貼り付け</button>
+        <button id="play">再生</button>
+        <button id="save">保存</button>
+    </div>
+
+    <audio id="audio" controls></audio>
+
+    <script src="https://unpkg.com/wavesurfer.js"></script>
+    <script>
+        let audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        let buffer, source;
+        let startTime = 0, endTime = 5;
+        let copiedBuffer = null;
+        let waveSurfer = WaveSurfer.create({
+            container: '#waveform',
+            waveColor: 'violet',
+            progressColor: 'purple'
+        });
+
+        document.getElementById('file-input').addEventListener('change', loadAudioFile);
+        document.getElementById('cut').addEventListener('click', cutAudio);
+        document.getElementById('fade-in').addEventListener('click', fadeInAudio);
+        document.getElementById('fade-out').addEventListener('click', fadeOutAudio);
+        document.getElementById('paste').addEventListener('click', pasteAudio);
+        document.getElementById('play').addEventListener('click', playAudio);
+        document.getElementById('save').addEventListener('click', saveAudio);
+
+        function loadAudioFile(event) {
+            const file = event.target.files[0];
+            const reader = new FileReader();
+            reader.onload = function() {
+                audioContext.decodeAudioData(reader.result, function(decodedBuffer) {
+                    buffer = decodedBuffer;
+                    waveSurfer.loadDecodedBuffer(buffer);
+                    endTime = buffer.duration;
+                    document.getElementById('end-time').value = endTime;
+                });
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        function cutAudio() {
+            startTime = parseFloat(document.getElementById('start-time').value);
+            endTime = parseFloat(document.getElementById('end-time').value);
+            copiedBuffer = audioContext.createBuffer(
+                buffer.numberOfChannels,
+                audioContext.sampleRate * (endTime - startTime),
+                audioContext.sampleRate
+            );
+            for (let i = 0; i < buffer.numberOfChannels; i++) {
+                const channelData = buffer.getChannelData(i).slice(
+                    Math.floor(startTime * buffer.sampleRate),
+                    Math.floor(endTime * buffer.sampleRate)
+                );
+                copiedBuffer.getChannelData(i).set(channelData);
+            }
+        }
+
+        function pasteAudio() {
+            if (!copiedBuffer) return;
+            const newBufferLength = buffer.length + copiedBuffer.length;
+            const newBuffer = audioContext.createBuffer(
+                buffer.numberOfChannels,
+                newBufferLength,
+                buffer.sampleRate
+            );
+            for (let i = 0; i < buffer.numberOfChannels; i++) {
+                const originalData = buffer.getChannelData(i);
+                const copiedData = copiedBuffer.getChannelData(i);
+                newBuffer.getChannelData(i).set(originalData);
+                newBuffer.getChannelData(i).set(copiedData, buffer.length);
+            }
+            buffer = newBuffer;
+            waveSurfer.loadDecodedBuffer(buffer);
+        }
+
+        function fadeInAudio() {
+            const fadeDuration = 1; // 1秒間フェードイン
+            const sampleRate = buffer.sampleRate;
+            for (let i = 0; i < buffer.numberOfChannels; i++) {
+                const data = buffer.getChannelData(i);
+                for (let j = 0; j < sampleRate * fadeDuration; j++) {
+                    data[j] *= j / (sampleRate * fadeDuration);
+                }
+            }
+            waveSurfer.loadDecodedBuffer(buffer);
+        }
+
+        function fadeOutAudio() {
+            const fadeDuration = 1; // 1秒間フェードアウト
+            const sampleRate = buffer.sampleRate;
+            const totalSamples = buffer.length;
+            for (let i = 0; i < buffer.numberOfChannels; i++) {
+                const data = buffer.getChannelData(i);
+                for (let j = totalSamples - sampleRate * fadeDuration; j < totalSamples; j++) {
+                    data[j] *= (totalSamples - j) / (sampleRate * fadeDuration);
+                }
+            }
+            waveSurfer.loadDecodedBuffer(buffer);
+        }
+
+        function playAudio() {
+            const playbackRate = parseFloat(document.getElementById('playback-rate').value);
+            const pitch = parseFloat(document.getElementById('pitch').value);
+            if (source) source.stop();
+            source = audioContext.createBufferSource();
+            source.buffer = buffer;
+            source.playbackRate.value = playbackRate;
+            
+            const pitchShiftNode = audioContext.createWaveShaper();
+            pitchShiftNode.curve = createPitchShiftCurve(pitch);
+            source.connect(pitchShiftNode).connect(audioContext.destination);
+
+            source.start();
+        }
+
+        function saveAudio() {
+            const wav = audioBufferToWav(buffer);
+            const blob = new Blob([new DataView(wav)], { type: 'audio/wav' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = 'edited_audio.wav';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+
+        function createPitchShiftCurve(pitch) {
+            const curve = new Float32Array(44100);
+            for (let i = 0; i < 44100; i++) {
+                curve[i] = Math.sin(2 * Math.PI * i * pitch / 44100);
+            }
+            return curve;
+        }
+
+        function audioBufferToWav(buffer) {
+            const numOfChan = buffer.numberOfChannels,
+                length = buffer.length * numOfChan * 2 + 44,
+                bufferArray = new ArrayBuffer(length),
+                view = new DataView(bufferArray),
+                channels = [],
+                i,
+                sample,
+                offset = 0,
+                pos = 0;
+
+            function setUint16(data) {
+                view.setUint16(pos, data, true);
+                pos += 2;
+            }
+
+            function setUint32(data) {
+                view.setUint32(pos, data, true);
+                pos += 4;
+            }
+
+            setUint32(0x46464952);
+            setUint32(length - 8);
+            setUint32(0x45564157);
+
+            setUint32(0x20746d66);
+            setUint32(16);
+            setUint16(1);
+            setUint16(numOfChan);
+            setUint32(buffer.sampleRate);
+            setUint32(buffer.sampleRate * 2 * numOfChan);
+            setUint16(numOfChan * 2);
+            setUint16(16);
+
+            setUint32(0x61746164);
+            setUint32(length - pos - 4);
+
+            for (i = 0; i < buffer.length; i++) {
+                for (let channel = 0; channel < numOfChan; channel++) {
+                    sample = buffer.getChannelData(channel)[i] * 32767.5;
+                    view.setInt16(pos, sample, true);
+                    pos += 2;
+                }
+            }
+            return bufferArray;
+        }
+    </script>
+</body>
+</html>
