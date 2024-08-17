@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Editor</title>
+</head>
+<body>
+    <h1>Audio Editor</h1>
+    <button id="record">Record</button>
+    <button id="stop" disabled>Stop</button>
+    <button id="play" disabled>Play</button>
+    <button id="copy" disabled>Copy</button>
+    <button id="paste" disabled>Paste</button>
+    <button id="speedUp" disabled>Speed Up</button>
+    <button id="slowDown" disabled>Slow Down</button>
+    <button id="export" disabled>Export</button>
+    <audio id="audio" controls></audio>
+
+    <script>
+        let mediaRecorder;
+        let audioChunks = [];
+        let copiedAudio = null;
+        let audioBuffer = null;
+        let audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        let sourceNode = null;
+        let playbackRate = 1.0;
+
+        document.getElementById('record').addEventListener('click', async () => {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            mediaRecorder = new MediaRecorder(stream);
+            mediaRecorder.start();
+
+            mediaRecorder.addEventListener('dataavailable', event => {
+                audioChunks.push(event.data);
+            });
+
+            mediaRecorder.addEventListener('stop', () => {
+                const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                const reader = new FileReader();
+                reader.readAsArrayBuffer(audioBlob);
+                reader.onloadend = () => {
+                    audioContext.decodeAudioData(reader.result, (buffer) => {
+                        audioBuffer = buffer;
+                        const audioUrl = URL.createObjectURL(audioBlob);
+                        document.getElementById('audio').src = audioUrl;
+                        document.getElementById('copy').disabled = false;
+                        document.getElementById('speedUp').disabled = false;
+                        document.getElementById('slowDown').disabled = false;
+                        document.getElementById('export').disabled = false;
+                    });
+                };
+            });
+
+            document.getElementById('record').disabled = true;
+            document.getElementById('stop').disabled = false;
+        });
+
+        document.getElementById('stop').addEventListener('click', () => {
+            mediaRecorder.stop();
+            document.getElementById('stop').disabled = true;
+            document.getElementById('play').disabled = false;
+        });
+
+        document.getElementById('play').addEventListener('click', () => {
+            if (sourceNode) {
+                sourceNode.stop();
+            }
+            sourceNode = audioContext.createBufferSource();
+            sourceNode.buffer = audioBuffer;
+            sourceNode.playbackRate.value = playbackRate;
+            sourceNode.connect(audioContext.destination);
+            sourceNode.start();
+        });
+
+        document.getElementById('copy').addEventListener('click', () => {
+            copiedAudio = audioBuffer;
+            document.getElementById('paste').disabled = false;
+        });
+
+        document.getElementById('paste').addEventListener('click', () => {
+            if (copiedAudio) {
+                const newBuffer = audioContext.createBuffer(
+                    copiedAudio.numberOfChannels,
+                    copiedAudio.length + audioBuffer.length,
+                    copiedAudio.sampleRate
+                );
+
+                for (let i = 0; i < copiedAudio.numberOfChannels; i++) {
+                    const channel = newBuffer.getChannelData(i);
+                    channel.set(audioBuffer.getChannelData(i));
+                    channel.set(copiedAudio.getChannelData(i), audioBuffer.length);
+                }
+
+                audioBuffer = newBuffer;
+                document.getElementById('audio').src = URL.createObjectURL(bufferToWave(audioBuffer));
+            }
+        });
+
+        document.getElementById('speedUp').addEventListener('click', () => {
+            playbackRate += 0.1;
+            playModifiedAudio();
+        });
+
+        document.getElementById('slowDown').addEventListener('click', () => {
+            playbackRate -= 0.1;
+            playModifiedAudio();
+        });
+
+        document.getElementById('export').addEventListener('click', () => {
+            const wavBlob = bufferToWave(audioBuffer);
+            const url = URL.createObjectURL(wavBlob);
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            a.href = url;
+            a.download = 'edited_audio.wav';
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+        });
+
+        function playModifiedAudio() {
+            if (sourceNode) {
+                sourceNode.stop();
+            }
+            sourceNode = audioContext.createBufferSource();
+            sourceNode.buffer = audioBuffer;
+            sourceNode.playbackRate.value = playbackRate;
+            sourceNode.connect(audioContext.destination);
+            sourceNode.start();
+        }
+
+        function bufferToWave(abuffer) {
+            let numOfChan = abuffer.numberOfChannels,
+                length = abuffer.length * numOfChan * 2 + 44,
+                buffer = new ArrayBuffer(length),
+                view = new DataView(buffer),
+                channels = [],
+                i,
+                sample,
+                offset = 0,
+                pos = 0;
+
+            // write WAVE header
+            setUint32(0x46464952);                         // "RIFF"
+            setUint32(length - 8);                         // file length - 8
+            setUint32(0x45564157);                         // "WAVE"
+
+            setUint32(0x20746d66);                         // "fmt " chunk
+            setUint32(16);                                 // length = 16
+            setUint16(1);                                  // PCM (uncompressed)
+            setUint16(numOfChan);
+            setUint32(abuffer.sampleRate);
+            setUint32(abuffer.sampleRate * 2 * numOfChan); // avg. bytes/sec
+            setUint16(numOfChan * 2);                      // block-align
+            setUint16(16);                                 // 16-bit (hardcoded in this demo)
+
+            setUint32(0x61746164);                         // "data" - chunk
+            setUint32(length - pos - 4);                   // chunk length
+
+            // write interleaved data
+            for (i = 0; i < abuffer.numberOfChannels; i++)
+                channels.push(abuffer.getChannelData(i));
+
+            while (pos < length) {
+                for (i = 0; i < numOfChan; i++) {           // interleave channels
+                    sample = Math.max(-1, Math.min(1, channels[i][offset])); // clamp
+                    sample = (0.5 + sample < 0 ? sample * 32768 : sample * 32767) | 0; // scale to 16-bit signed int
+                    view.setInt16(pos, sample, true);        // write 16-bit sample
+                    pos += 2;
+                }
+                offset++;                              // next source sample
+            }
+
+            return new Blob([buffer], { type: "audio/wav" });
+
+            function setUint16(data) {
+                view.setUint16(pos, data, true);
+                pos += 2;
+            }
+
+            function setUint32(data) {
+                view.setUint32(pos, data, true);
+                pos += 4;
+            }
+        }
+    </script>
+</body>
+</html>
